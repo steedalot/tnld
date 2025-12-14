@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Database file: tunneluser:gtwy-admin 664
   - Allows tunneluser to write via SSH (request/release commands)
 
+- **nginx config permissions** - Fixed permission denied when writing configs
+  - Configs now written to `/opt/gtwy/nginx-configs/` (tunneluser writable)
+  - Directory: root:gtwy-admin 775
+  - Symlink: `/etc/nginx/sites-enabled/tunnels-autogen.conf` → `/opt/gtwy/nginx-configs/tunnels-autogen.conf`
+  - tunneluser (via SSH) can now write nginx configurations
+
 ### Technical
 - Added v1.2.1 to version sequences in migration runners
 - Improved error handling for config parsing edge cases
@@ -91,6 +97,24 @@ sudo chown tunneluser:gtwy-admin /opt/gtwy/tunnels.db
 sudo chmod 664 /opt/gtwy/tunnels.db
 sudo chown root:gtwy-admin /opt/gtwy
 sudo chmod 775 /opt/gtwy
+```
+
+**3. Fix nginx config permissions:**
+```bash
+# On gateway server:
+sudo mkdir -p /opt/gtwy/nginx-configs
+sudo chown root:gtwy-admin /opt/gtwy/nginx-configs
+sudo chmod 775 /opt/gtwy/nginx-configs
+
+# Create symlink
+sudo ln -sf /opt/gtwy/nginx-configs/tunnels-autogen.conf \
+  /etc/nginx/sites-enabled/tunnels-autogen.conf
+
+# If old config exists, migrate it
+if [ -f /etc/nginx/sites-enabled/tunnels-autogen.conf ] && [ ! -L /etc/nginx/sites-enabled/tunnels-autogen.conf ]; then
+  sudo mv /etc/nginx/sites-enabled/tunnels-autogen.conf \
+    /opt/gtwy/nginx-configs/tunnels-autogen.conf
+fi
 ```
 
 **New installations** (v1.2.1+) get correct permissions automatically.
