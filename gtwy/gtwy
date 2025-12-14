@@ -922,11 +922,12 @@ def run_config_migrations(config, config_path, from_version, to_version):
     Returns:
         Number of migrations run
     """
-    migrations = {
+    # All available migrations (idempotent - can run multiple times)
+    all_migrations = {
         "1.2.0_to_1.2.1": migrate_config_1_2_0_to_1_2_1,
     }
 
-    # Determine which migrations to run
+    # Determine which migrations to run based on version sequence
     version_sequence = ["1.0.0", "1.1.0", "1.2.0", "1.2.1"]
 
     try:
@@ -939,16 +940,30 @@ def run_config_migrations(config, config_path, from_version, to_version):
     migrations_run = 0
     config_modified = False
 
-    for i in range(from_idx, to_idx):
-        current_v = version_sequence[i]
-        next_v = version_sequence[i + 1]
-        migration_key = f"{current_v}_to_{next_v}"
+    # If from == to, still try to run the latest migration (idempotent check)
+    if from_idx == to_idx and to_version == "1.2.1":
+        # For v1.2.1, always try to run the 1.2.0→1.2.1 migration
+        # (it's idempotent and will only change if needed)
+        migration_key = "1.2.0_to_1.2.1"
+        if migration_key in all_migrations:
+            config, was_modified = all_migrations[migration_key](config)
+            if was_modified:
+                print(f"   Running config migration: {migration_key}")
+                config_modified = True
+                migrations_run += 1
+    else:
+        # Normal migration sequence for version upgrades
+        for i in range(from_idx, to_idx):
+            current_v = version_sequence[i]
+            next_v = version_sequence[i + 1]
+            migration_key = f"{current_v}_to_{next_v}"
 
-        if migration_key in migrations:
-            print(f"   Running config migration: {migration_key}")
-            config = migrations[migration_key](config)
-            config_modified = True
-            migrations_run += 1
+            if migration_key in all_migrations:
+                print(f"   Running config migration: {migration_key}")
+                config, was_modified = all_migrations[migration_key](config)
+                if was_modified:
+                    config_modified = True
+                    migrations_run += 1
 
     # Save config if modified
     if config_modified:
@@ -1009,17 +1024,23 @@ def migrate_config_1_2_0_to_1_2_1(config):
     Changes:
     - nginx.config_path: /etc/nginx/sites-enabled/tunnels-autogen.conf
       → /opt/gtwy/nginx-configs/tunnels-autogen.conf
+
+    Returns:
+        tuple: (updated_config, was_modified)
     """
     old_path = '/etc/nginx/sites-enabled/tunnels-autogen.conf'
     new_path = '/opt/gtwy/nginx-configs/tunnels-autogen.conf'
+
+    was_modified = False
 
     if config.get('nginx', {}).get('config_path') == old_path:
         print(f"      Updating nginx.config_path:")
         print(f"         {old_path}")
         print(f"      → {new_path}")
         config['nginx']['config_path'] = new_path
+        was_modified = True
 
-    return config
+    return config, was_modified
 
 def migrate_1_0_0_to_1_1_0(conn):
     """Migration for v1.1.0 - no schema changes needed."""
