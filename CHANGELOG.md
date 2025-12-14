@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Extracts gateway IP, admin_port, ssh_port from existing service file
   - Seamless upgrade from v1.0.0 without manual intervention
 
+- **Missing shutil import** - Fixed import error in tnl update
+  - `shutil` was imported locally in functions instead of globally
+  - Caused "cannot access local variable 'shutil'" error during update
+  - Now imported at module level
+
 #### gtwy (Gateway Manager)
 - **Configuration validation** - Changed from errors to warnings
   - Old configs with different structure no longer fail validation
@@ -24,10 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Non-critical warnings don't prevent successful update
   - Clear messaging: "These are non-critical, gtwy should work normally"
 
+- **SSH command restriction** - Fixed authorized_keys for service tunnels
+  - Changed from hardcoded `gtwy request` to `gtwy $SSH_ORIGINAL_COMMAND`
+  - Allows boxes to call both `request` and `release` with arguments
+  - Path updated from `/opt/gtwy/gtwy` to `/usr/local/bin/gtwy`
+  - **BREAKING**: Existing boxes need authorized_keys entry manually updated
+
+- **Logging permissions** - Fixed permission error for SSH commands
+  - SSH commands (via tunneluser) now use console-only logging
+  - No longer tries to write to `/opt/gtwy/gtwy.log` (permission denied)
+  - Regular admin commands still use file logging
+
 ### Technical
 - Added v1.2.1 to version sequences in migration runners
 - Improved error handling for config parsing edge cases
 - Better user feedback during update process
+- Console-only logging for SSH-invoked commands (BOX_ID env var detection)
 
 ### Migration Notes (v1.0.0 → v1.2.1)
 **This release specifically fixes the v1.0.0 → v1.2.x upgrade path.**
@@ -42,6 +59,25 @@ Now with v1.2.1:
 sudo ./tnl update
 # Works! Automatically creates config.yml from systemd service
 ```
+
+**IMPORTANT - Manual Step for Existing Boxes:**
+
+If you registered boxes before v1.2.1, you need to update their authorized_keys entry on the gateway:
+
+```bash
+# On gateway server:
+sudo nano /home/tunneluser/.ssh/authorized_keys
+
+# Find the line for your box:
+# OLD (broken):
+command="BOX_ID=xyz /opt/gtwy/gtwy request",restrict,port-forwarding ssh-ed25519 AAAA...
+
+# Change to:
+# NEW (working):
+command="BOX_ID=xyz /usr/local/bin/gtwy $SSH_ORIGINAL_COMMAND",restrict,port-forwarding ssh-ed25519 AAAA...
+```
+
+**New boxes** (added with v1.2.1) get the correct entry automatically.
 
 ## [1.2.0] - 2025-12-14
 
