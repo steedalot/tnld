@@ -747,7 +747,7 @@ def add_to_authorized_keys(box_id: str, public_key: str, authorized_keys_path: s
         authorized_keys_path: Path to authorized_keys file
     """
     entry = (
-        f'command="BOX_ID={box_id} /opt/gtwy/gtwy request",'
+        f'command="BOX_ID={box_id} /usr/local/bin/gtwy $SSH_ORIGINAL_COMMAND",'
         f'restrict,port-forwarding {public_key}\n'
     )
 
