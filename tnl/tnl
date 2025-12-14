@@ -8,17 +8,23 @@ import os
 import sys
 import subprocess
 import argparse
+import yaml
+import json
+import re
 from pathlib import Path
+from datetime import datetime, timezone
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 TUNNELUSER = "tunneluser"
 TUNNELUSER_HOME = "/home/tunneluser"
 SSH_KEY_PATH = f"{TUNNELUSER_HOME}/.ssh/tunnel_key"
-SYSTEMD_SERVICE = "/etc/systemd/system/tnl-admin.service"
+SYSTEMD_SERVICE_ADMIN = "/etc/systemd/system/tnl-admin.service"
+TNL_CONFIG_DIR = "/etc/tnl"
+TNL_CONFIG_FILE = "/etc/tnl/config.yml"
 
 # ============================================================================
 # EXCEPTIONS
@@ -49,6 +55,170 @@ def run_command(cmd, check=True, capture_output=False):
         text=True
     )
     return result
+
+# ============================================================================
+# CONFIG MANAGEMENT
+# ============================================================================
+
+def load_config():
+    """Load config from /etc/tnl/config.yml."""
+    config_path = Path(TNL_CONFIG_FILE)
+    if not config_path.exists():
+        raise TnlError(f"Config file not found: {TNL_CONFIG_FILE}\n   Run 'sudo tnl setup' first")
+
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def save_config(config):
+    """Save config to /etc/tnl/config.yml."""
+    config_dir = Path(TNL_CONFIG_DIR)
+    config_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+
+    with open(TNL_CONFIG_FILE, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    os.chmod(TNL_CONFIG_FILE, 0o644)
+
+def init_config(gateway_ip, admin_port, ssh_port):
+    """Initialize config file during setup."""
+    config = {
+        'gateway': {
+            'ip': gateway_ip,
+            'admin_port': admin_port,
+            'ssh_port': ssh_port
+        },
+        'tunnels': {}
+    }
+    save_config(config)
+    return config
+
+# ============================================================================
+# VALIDATION
+# ============================================================================
+
+def validate_service_name(service):
+    """Validate service name (lowercase, numbers, hyphens only)."""
+    if not re.match(r'^[a-z0-9-]+$', service):
+        raise TnlError(f"Invalid service name '{service}'\n   Must contain only lowercase letters, numbers, and hyphens")
+
+def validate_port(port):
+    """Validate port number (1-65535)."""
+    if not (1 <= port <= 65535):
+        raise TnlError(f"Invalid port {port}\n   Must be between 1 and 65535")
+
+# ============================================================================
+# SSH COMMUNICATION
+# ============================================================================
+
+def ssh_request(service, local_port, gateway):
+    """Request tunnel from gateway via SSH."""
+    key_path = Path(SSH_KEY_PATH)
+
+    result = run_command(
+        [
+            "sudo", "-u", TUNNELUSER,
+            "ssh",
+            "-i", str(key_path),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-p", str(gateway['ssh_port']),
+            f"tunneluser@{gateway['ip']}",
+            "request", service, str(local_port)
+        ],
+        check=False,
+        capture_output=True
+    )
+
+    if result.returncode != 0:
+        raise TnlError(f"Gateway request failed:\n   {result.stderr.strip()}")
+
+    return result
+
+def ssh_release(service, gateway):
+    """Release tunnel on gateway via SSH."""
+    key_path = Path(SSH_KEY_PATH)
+
+    result = run_command(
+        [
+            "sudo", "-u", TUNNELUSER,
+            "ssh",
+            "-i", str(key_path),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-p", str(gateway['ssh_port']),
+            f"tunneluser@{gateway['ip']}",
+            "release", service
+        ],
+        check=False,
+        capture_output=True
+    )
+
+    # Best effort - log but don't fail
+    if result.returncode != 0:
+        print(f"   ⚠ Gateway release warning: {result.stderr.strip()}")
+
+# ============================================================================
+# SYSTEMD SERVICE MANAGEMENT
+# ============================================================================
+
+def create_service_tunnel(service, local_port, server_port, gateway):
+    """Create systemd service for service tunnel."""
+    service_name = f"tnl-{service}.service"
+    service_path = f"/etc/systemd/system/{service_name}"
+
+    service_content = f"""[Unit]
+Description=tnl Service Tunnel: {service} (Local:{local_port} → Gateway:{server_port})
+After=network-online.target tnl-admin.service
+Wants=network-online.target
+Requires=tnl-admin.service
+
+[Service]
+Type=simple
+User={TUNNELUSER}
+Restart=always
+RestartSec=10
+ExecStart=/usr/bin/autossh -M 0 -N -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" -o "ExitOnForwardFailure=yes" -o "StrictHostKeyChecking=no" -i {SSH_KEY_PATH} -R {server_port}:localhost:{local_port} -p {gateway['ssh_port']} tunneluser@{gateway['ip']}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    with open(service_path, 'w') as f:
+        f.write(service_content)
+
+    os.chmod(service_path, 0o644)
+
+    # Reload and enable
+    run_command(["systemctl", "daemon-reload"])
+    run_command(["systemctl", "enable", service_name])
+    run_command(["systemctl", "start", service_name])
+
+def remove_service_tunnel(service):
+    """Remove systemd service for service tunnel."""
+    service_name = f"tnl-{service}.service"
+    service_path = f"/etc/systemd/system/{service_name}"
+
+    # Stop and disable
+    run_command(["systemctl", "stop", service_name], check=False)
+    run_command(["systemctl", "disable", service_name], check=False)
+
+    # Remove file
+    if Path(service_path).exists():
+        os.remove(service_path)
+
+    run_command(["systemctl", "daemon-reload"])
+
+def get_service_status(service):
+    """Get systemd service status."""
+    service_name = f"tnl-{service}.service"
+
+    result = run_command(
+        ["systemctl", "is-active", service_name],
+        check=False,
+        capture_output=True
+    )
+
+    return result.stdout.strip()
 
 # ============================================================================
 # COMMANDS
@@ -229,8 +399,13 @@ def cmd_setup(args):
     else:
         print("   ✓ SSH connection successful")
 
-    # 2. Create systemd service
-    print("\n2. Creating systemd service...")
+    # 2. Create config file
+    print("\n2. Creating config file...")
+    init_config(gateway_ip, admin_port, ssh_port)
+    print(f"   ✓ Config created: {TNL_CONFIG_FILE}")
+
+    # 3. Create systemd service
+    print("\n3. Creating systemd service...")
 
     service_content = f"""[Unit]
 Description=tnl Admin SSH Tunnel (Reverse: Gateway:{admin_port} → Box:22)
@@ -248,24 +423,24 @@ ExecStart=/usr/bin/autossh -M 0 -N -o "ServerAliveInterval=30" -o "ServerAliveCo
 WantedBy=multi-user.target
 """
 
-    with open(SYSTEMD_SERVICE, "w") as f:
+    with open(SYSTEMD_SERVICE_ADMIN, "w") as f:
         f.write(service_content)
 
-    print(f"   ✓ Service created: {SYSTEMD_SERVICE}")
+    print(f"   ✓ Service created: {SYSTEMD_SERVICE_ADMIN}")
 
-    # 3. Reload systemd and enable service
-    print("\n3. Enabling service...")
+    # 4. Reload systemd and enable service
+    print("\n4. Enabling service...")
     run_command(["systemctl", "daemon-reload"])
     run_command(["systemctl", "enable", "tnl-admin.service"])
     print("   ✓ Service enabled")
 
-    # 4. Start service
-    print("\n4. Starting service...")
+    # 5. Start service
+    print("\n5. Starting service...")
     run_command(["systemctl", "restart", "tnl-admin.service"])
     print("   ✓ Service started")
 
-    # 5. Check status
-    print("\n5. Checking status...")
+    # 6. Check status
+    print("\n6. Checking status...")
     import time
     time.sleep(2)
 
@@ -302,7 +477,7 @@ def cmd_status(args):
     print("📊 tnl Status\n")
 
     # Check if service exists
-    if not Path(SYSTEMD_SERVICE).exists():
+    if not Path(SYSTEMD_SERVICE_ADMIN).exists():
         print("❌ Tunnel not configured")
         print("   Run 'sudo tnl setup <gateway-ip> <admin-port>' first")
         return
@@ -327,6 +502,204 @@ def cmd_status(args):
         "journalctl", "-u", "tnl-admin.service",
         "-n", "10", "--no-pager"
     ])
+
+def cmd_add(args):
+    """Add service tunnel."""
+    print("➕ Adding Service Tunnel\n")
+    check_root()
+
+    service = args.service
+    local_port = args.local_port
+
+    # 1. Validate inputs
+    print("1. Validating inputs...")
+    validate_service_name(service)
+    validate_port(local_port)
+    print("   ✓ Inputs valid")
+
+    # 2. Load config
+    print("\n2. Loading config...")
+    try:
+        config = load_config()
+    except TnlError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+    gateway = config['gateway']
+    print(f"   ✓ Gateway: {gateway['ip']}:{gateway['ssh_port']}")
+
+    # 3. Check if tunnel already exists
+    tunnels = config.get('tunnels', {})
+    if service in tunnels:
+        print(f"❌ Error: Tunnel for service '{service}' already exists")
+        print(f"   Run: sudo tnl list")
+        print(f"   Or remove it first: sudo tnl remove {service}")
+        sys.exit(1)
+
+    # 4. Request tunnel from gateway
+    print(f"\n3. Requesting tunnel from gateway...")
+    try:
+        result = ssh_request(service, local_port, gateway)
+
+        # Parse JSON response
+        data = json.loads(result.stdout.strip())
+        server_port = data['server_port']
+        subdomain = data['subdomain']
+
+        print(f"   ✓ Tunnel allocated")
+        print(f"   Server Port: {server_port}")
+        print(f"   Subdomain:   {subdomain}")
+    except json.JSONDecodeError as e:
+        print(f"❌ Error: Failed to parse gateway response")
+        print(f"   Response: {result.stdout.strip()}")
+        sys.exit(1)
+    except TnlError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+    # 5. Update config
+    print("\n4. Updating config...")
+    config.setdefault('tunnels', {})[service] = {
+        'local_port': local_port,
+        'server_port': server_port,
+        'subdomain': subdomain,
+        'created': datetime.now(timezone.utc).isoformat(),
+        'status': 'active'
+    }
+
+    # 6. Create systemd service
+    try:
+        save_config(config)
+        print("   ✓ Config saved")
+
+        print("\n5. Creating systemd service...")
+        create_service_tunnel(service, local_port, server_port, gateway)
+        print(f"   ✓ Service created: tnl-{service}.service")
+        print("   ✓ Service started")
+
+    except Exception as e:
+        # ROLLBACK: Remove from config and release on gateway
+        print(f"\n❌ Error during service creation: {e}")
+        print("   Rolling back...")
+
+        del config['tunnels'][service]
+        save_config(config)
+        ssh_release(service, gateway)
+
+        print("   ✓ Rollback complete")
+        sys.exit(1)
+
+    # 7. Success
+    print("\n" + "="*60)
+    print("✓ Tunnel requested successfully!")
+    print("="*60)
+    print(f"  Service:     {service}")
+    print(f"  Local Port:  {local_port}")
+    print(f"  Server Port: {server_port}")
+    print(f"  URL:         https://{subdomain}")
+    print("\n  systemd service: tnl-{service}.service")
+    print("="*60)
+
+def cmd_remove(args):
+    """Remove service tunnel."""
+    print("➖ Removing Service Tunnel\n")
+    check_root()
+
+    service = args.service
+
+    # 1. Load config
+    print("1. Loading config...")
+    try:
+        config = load_config()
+    except TnlError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+    gateway = config['gateway']
+    tunnels = config.get('tunnels', {})
+
+    # 2. Check if tunnel exists
+    if service not in tunnels:
+        print(f"❌ Error: Tunnel '{service}' not found")
+        print(f"   Run: sudo tnl list")
+        sys.exit(1)
+
+    tunnel = tunnels[service]
+    print(f"   ✓ Found tunnel: {service}")
+    print(f"   Subdomain: {tunnel['subdomain']}")
+
+    # 3. Stop systemd service
+    print("\n2. Stopping tunnel service...")
+    remove_service_tunnel(service)
+    print(f"   ✓ Service stopped and removed")
+
+    # 4. Release on gateway
+    print("\n3. Releasing tunnel on gateway...")
+    ssh_release(service, gateway)
+    print("   ✓ Tunnel released")
+
+    # 5. Remove from config
+    print("\n4. Updating config...")
+    del config['tunnels'][service]
+    save_config(config)
+    print("   ✓ Config updated")
+
+    # 6. Success
+    print("\n" + "="*60)
+    print(f"✓ Tunnel '{service}' removed")
+    print("="*60)
+
+def cmd_list(args):
+    """List all service tunnels."""
+    check_root()
+
+    print("📋 Service Tunnels\n")
+
+    # Load config
+    try:
+        config = load_config()
+    except TnlError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+    tunnels = config.get('tunnels', {})
+
+    if not tunnels:
+        print("No service tunnels configured.")
+        print("\nAdd a tunnel with: sudo tnl add <service> <port>")
+        return
+
+    # Header
+    print("┌─────────────┬────────┬─────────┬─────────────────────────────────────────┬──────────┐")
+    print("│ Service     │ Local  │ Server  │ URL                                     │ Status   │")
+    print("├─────────────┼────────┼─────────┼─────────────────────────────────────────┼──────────┤")
+
+    active_count = 0
+    inactive_count = 0
+
+    for service, tunnel in sorted(tunnels.items()):
+        status = get_service_status(service)
+
+        if status == "active":
+            active_count += 1
+            status_display = "active  "
+        else:
+            inactive_count += 1
+            status_display = "inactive"
+
+        # Truncate/pad fields for alignment
+        service_display = service[:11].ljust(11)
+        local_port_display = str(tunnel['local_port']).center(6)
+        server_port_display = str(tunnel['server_port']).center(7)
+        url = f"https://{tunnel['subdomain']}"
+        url_display = url[:39].ljust(39)
+
+        print(f"│ {service_display} │ {local_port_display} │ {server_port_display} │ {url_display} │ {status_display} │")
+
+    print("└─────────────┴────────┴─────────┴─────────────────────────────────────────┴──────────┘")
+
+    total = len(tunnels)
+    print(f"\nTotal: {total} tunnel(s) ({active_count} active, {inactive_count} inactive)")
 
 def cmd_version(args):
     """Show version."""
@@ -364,10 +737,34 @@ def build_parser():
                         help='Gateway SSH port (default: 22)')
     p_setup.set_defaults(func=cmd_setup)
 
+    # add
+    p_add = subparsers.add_parser(
+        'add',
+        help='Add service tunnel'
+    )
+    p_add.add_argument('service', help='Service name (e.g., gitea, theia)')
+    p_add.add_argument('local_port', type=int, help='Local port (e.g., 3000)')
+    p_add.set_defaults(func=cmd_add)
+
+    # remove
+    p_remove = subparsers.add_parser(
+        'remove',
+        help='Remove service tunnel'
+    )
+    p_remove.add_argument('service', help='Service name')
+    p_remove.set_defaults(func=cmd_remove)
+
+    # list
+    p_list = subparsers.add_parser(
+        'list',
+        help='List all service tunnels'
+    )
+    p_list.set_defaults(func=cmd_list)
+
     # status
     p_status = subparsers.add_parser(
         'status',
-        help='Show tunnel status'
+        help='Show admin tunnel status'
     )
     p_status.set_defaults(func=cmd_status)
 

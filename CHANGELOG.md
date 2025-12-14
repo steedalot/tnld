@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-12-14
+
+### Added
+
+#### gtwy (Gateway Manager)
+- JSON response format for `request` command
+  - Returns both `server_port` and `subdomain` as JSON
+  - Enables tnl to display full URLs to users
+  - More extensible for future enhancements
+
+#### tnl (Tunnel Client)
+- **`add <service> <port>` command** - Add service tunnel
+  - Requests tunnel from gateway via SSH
+  - Creates systemd service for persistent tunnel (tnl-<service>.service)
+  - Displays full subdomain URL
+  - Automatic rollback on failure (atomic operation)
+  - One systemd service per tunnel for easy management
+
+- **`remove <service>` command** - Remove service tunnel
+  - Stops and disables systemd service
+  - Releases tunnel on gateway (DNS, nginx, SSL cleanup)
+  - Removes from local configuration
+  - Clean teardown of all resources
+
+- **`list` command** - List all service tunnels
+  - Shows service name, local port, server port, URL, and status
+  - Real-time systemd status check (active/inactive)
+  - Formatted table output with totals
+
+- **Central configuration file: `/etc/tnl/config.yml`**
+  - Gateway connection details (IP, ports)
+  - Service tunnel tracking
+  - YAML format (human-readable, supports comments)
+  - Permissions: root:root 644
+
+### Changed
+- `tnl setup` now creates `/etc/tnl/config.yml` with gateway connection details
+- `gtwy request` output format: plain text → JSON (**BREAKING CHANGE**)
+  - Old: `10001`
+  - New: `{"server_port": 10001, "subdomain": "gitea.box01.kibox.online"}`
+- Updated `tnl status` help text to clarify it shows admin tunnel status
+
+### Technical
+- Dependencies: Added PyYAML to tnl (already used in gtwy)
+- Config location: `/etc/tnl/config.yml` (root:root 644)
+- One systemd service per tunnel: `/etc/systemd/system/tnl-<service>.service`
+- Service tunnels depend on admin tunnel (systemd `Requires=tnl-admin.service`)
+- Atomic operations with rollback on failure
+- Input validation: service names (lowercase, numbers, hyphens), ports (1-65535)
+
+### Migration Notes (v1.0.0 → v1.1.0)
+- **gtwy**: Update to v1.1.0 first (breaking change in `request` output)
+- **tnl**: Update to v1.1.0 after gtwy is updated
+- Existing v1.0.0 installations: No migration needed, config created on first `tnl add`
+- New installations: Use `tnl setup` as before, config created automatically
+
 ## [1.0.0] - 2025-12-13
 
 ### Added
