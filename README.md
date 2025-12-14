@@ -175,21 +175,19 @@ sudo ./tnl update
 
 This project uses [Semantic Versioning](https://semver.org/):
 
-- **v1.2.1** - Bugfix release (current)
+- **v1.2.2** - Async certificate workflow (current)
+  - Instant tunnel creation (no waiting for DNS/certificates)
+  - Background certificate requests with status tracking
+  - HTTP-only → automatic HTTPS upgrade
+  - Simplified update paths (only last stable → current)
+
+- **v1.2.1** - Bugfix release
   - Fixed: v1.0.0 → v1.2.x update path
-  - Fixed: Configuration validation warnings
+  - Fixed: Multiple permission issues
 
 - **v1.2.0** - Update mechanism
   - gtwy/tnl: `update` command with automatic backups
   - Enhanced box setup instructions
-
-- **v1.1.0** - Service tunnels
-  - tnl: `add`, `remove`, `list` commands
-  - Dynamic service tunnel management
-
-- **v1.0.0** - Initial release
-  - gtwy: install, setup, box management, tunnel operations
-  - tnl: install, setup, admin tunnel
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 

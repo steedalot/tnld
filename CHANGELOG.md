@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-12-14
+
+### Changed
+
+#### gtwy (Gateway Manager)
+- **Async certificate workflow** - Major improvement to tunnel creation
+  - Tunnel creation now returns immediately (no waiting for DNS/certificate)
+  - Certificate requested in background via detached subprocess
+  - New `gtwy finalize-tunnel` command (internal, runs in background)
+  - DNS propagation check: smart loop, max 120s timeout
+  - Tunnels start with HTTP-only, upgrade to HTTPS automatically
+  - Status tracking: `pending_cert` → `active` (or `error` on failure)
+
+- **nginx template improvements**
+  - Two templates: HTTP-only (pending_cert) and SSL (active)
+  - Fixed deprecated `listen 443 ssl http2` → `listen 443 ssl; http2 on;`
+  - Inline SSL settings (no dependency on `/etc/letsencrypt/options-ssl-nginx.conf`)
+  - Modern TLS configuration: TLSv1.2/1.3, secure ciphers
+
+- **Simplified update paths**
+  - Only supports migration from last stable (1.2.1) → current
+  - Removed legacy migration code for v1.0.0, v1.1.0, v1.2.0
+  - Cleaner, more maintainable codebase
+
+#### tnl (Tunnel Client)
+- **Simplified update paths**
+  - Only supports migration from last stable (1.2.1) → current
+  - Removed legacy migration code
+
+### Added
+
+#### gtwy (Gateway Manager)
+- Added `import time` for DNS propagation wait loops
+- New `cmd_finalize_tunnel` command for async certificate requests
+- `NGINX_TEMPLATE_HTTP` - HTTP-only template for pending certificates
+- `NGINX_TEMPLATE_SSL` - SSL template for active tunnels
+
+### Fixed
+
+#### gtwy (Gateway Manager)
+- Fixed `request_certificate()` call in `cmd_finalize_tunnel` (missing config parameter)
+
+### Technical
+- Background process uses `subprocess.Popen()` with `start_new_session=True`
+- Detached from SSH session, survives connection close
+- Logging to gtwy.log for background finalization process
+- Error handling: failures set tunnel status to 'error' with message
+- Smart DNS check: 24 attempts × 5s = 120s max wait
+
+### Workflow
+
+**Before (v1.2.1):**
+```
+tnl add → gtwy request → DNS + wait + certbot + nginx → return port (slow, 30-120s)
+```
+
+**After (v1.2.2):**
+```
+tnl add → gtwy request → DNS + HTTP nginx → return port (fast, <5s)
+           ↓
+   [background] gtwy finalize-tunnel → wait DNS → certbot → HTTPS nginx
+```
+
+**Benefits:**
+- ✅ Instant response to client
+- ✅ Service available immediately (HTTP)
+- ✅ Automatic upgrade to HTTPS
+- ✅ Better error handling
+- ✅ No SSH timeout issues
+
+### Upgrade
+
+```bash
+# Gateway
+curl -LO https://github.com/steedalot/tnld/releases/latest/download/gtwy
+chmod +x gtwy
+sudo ./gtwy update
+
+# Client
+curl -LO https://github.com/steedalot/tnld/releases/latest/download/tnl
+chmod +x tnl
+sudo ./tnl update
+```
+
+No manual steps required for v1.2.1 → v1.2.2.
+
 ## [1.2.1] - 2025-12-14
 
 ### Fixed

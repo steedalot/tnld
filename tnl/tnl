@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 TUNNELUSER = "tunneluser"
 TUNNELUSER_HOME = "/home/tunneluser"
 SSH_KEY_PATH = f"{TUNNELUSER_HOME}/.ssh/tunnel_key"
@@ -256,22 +256,24 @@ def detect_installed_version():
     except Exception:
         pass
 
-    return "1.0.0"  # Assume oldest if unknown
+    return "1.2.1"  # Default to last stable version
 
 def run_config_migrations(config, from_version, to_version):
-    """Run config migrations from one version to another."""
+    """Run config migrations from one version to another.
 
-    migrations = {
-        "1.0.0_to_1.1.0": migrate_config_1_0_0_to_1_1_0,
-        "1.1.0_to_1.2.0": migrate_config_1_1_0_to_1_2_0,
-    }
+    Note: Only supports migrations from last stable (1.2.1) to current.
+    """
+    # Config migrations (none needed for 1.2.1→1.2.2)
+    migrations = {}
 
-    version_sequence = ["1.0.0", "1.1.0", "1.2.0", "1.2.1"]
+    # Supported version sequence (only last stable → current)
+    version_sequence = ["1.2.1", "1.2.2"]
 
     try:
         from_idx = version_sequence.index(from_version)
         to_idx = version_sequence.index(to_version)
     except ValueError:
+        # Unknown version, skip migrations
         print(f"   ⚠ Unknown version in migration: {from_version} → {to_version}")
         return 0
 
@@ -292,15 +294,6 @@ def run_config_migrations(config, from_version, to_version):
     config['_meta']['schema_version'] = to_version
 
     return migrations_run
-
-def migrate_config_1_0_0_to_1_1_0(config):
-    """v1.1.0 added tunnels dict."""
-    if 'tunnels' not in config:
-        config['tunnels'] = {}
-
-def migrate_config_1_1_0_to_1_2_0(config):
-    """v1.2.0 - no config changes needed."""
-    pass
 
 # ============================================================================
 # COMMANDS

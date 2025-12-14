@@ -24,6 +24,7 @@ import base64
 import shutil
 import tarfile
 import json
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -33,33 +34,19 @@ from typing import Optional, Dict, List, Any, Tuple
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 DEFAULT_CONFIG_PATH = "/opt/gtwy/config.yml"
 DEFAULT_DB_PATH = "/opt/gtwy/tunnels.db"
 
 # Embedded nginx template (no external file needed!)
-NGINX_TEMPLATE = """# Template for a single tunnel server block
-# Variables: {SUBDOMAIN}, {SERVER_PORT}
+# HTTP-only template for tunnels pending certificate
+NGINX_TEMPLATE_HTTP = """# Tunnel: {SUBDOMAIN} (pending certificate)
+# Port: {SERVER_PORT}
 
 server {
     listen 80;
     listen [::]:80;
     server_name {SUBDOMAIN};
-
-    # Redirect HTTP to HTTPS
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name {SUBDOMAIN};
-
-    # SSL certificates (managed by certbot)
-    ssl_certificate /etc/letsencrypt/live/{SUBDOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{SUBDOMAIN}/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     # Proxy settings
     location / {
@@ -76,13 +63,69 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Timeouts (adjust as needed)
+        # Timeouts
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
         proxy_read_timeout 60s;
     }
 
-    # Optional: Increase upload size for file uploads
+    # Increase upload size for file uploads
+    client_max_body_size 100M;
+}
+"""
+
+# SSL template for active tunnels with certificate
+NGINX_TEMPLATE_SSL = """# Tunnel: {SUBDOMAIN} (active with SSL)
+# Port: {SERVER_PORT}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {SUBDOMAIN};
+
+    # Redirect HTTP to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {SUBDOMAIN};
+
+    # SSL certificates (managed by certbot)
+    ssl_certificate /etc/letsencrypt/live/{SUBDOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{SUBDOMAIN}/privkey.pem;
+
+    # SSL settings (inline to avoid dependency on certbot-installed files)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # Proxy settings
+    location / {
+        proxy_pass http://localhost:{SERVER_PORT};
+        proxy_http_version 1.1;
+
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Standard proxy headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # Increase upload size for file uploads
     client_max_body_size 100M;
 }
 """
@@ -459,17 +502,24 @@ def generate_subdomain(conn: sqlite3.Connection, service: str, box_id: str) -> s
 def generate_nginx_config(conn: sqlite3.Connection, template_path: str = None) -> str:
     """Generate complete nginx configuration from database.
 
-    Note: template_path parameter is kept for backward compatibility but ignored.
-    Template is now embedded in the script as NGINX_TEMPLATE constant.
-    """
-    template = NGINX_TEMPLATE
+    Uses different templates based on tunnel status:
+    - pending_cert: HTTP-only (NGINX_TEMPLATE_HTTP)
+    - active: HTTPS with redirect (NGINX_TEMPLATE_SSL)
 
-    # Get all active and pending tunnels
+    Note: template_path parameter is kept for backward compatibility but ignored.
+    """
+    # Get all non-error tunnels
     cursor = conn.execute("SELECT * FROM tunnels WHERE status != 'error' ORDER BY subdomain")
     tunnels = cursor.fetchall()
 
     config_blocks = []
     for tunnel in tunnels:
+        # Choose template based on status
+        if tunnel['status'] == 'pending_cert':
+            template = NGINX_TEMPLATE_HTTP
+        else:  # active or any other status
+            template = NGINX_TEMPLATE_SSL
+
         block = template.replace('{SUBDOMAIN}', tunnel['subdomain'])
         block = block.replace('{SERVER_PORT}', str(tunnel['server_port']))
         config_blocks.append(block)
@@ -908,7 +958,7 @@ def detect_installed_version():
     except Exception:
         pass
 
-    return "1.0.0"  # Assume oldest if unknown
+    return "1.2.1"  # Default to last stable version
 
 def run_config_migrations(config, config_path, from_version, to_version):
     """Run config migrations from one version to another.
@@ -924,46 +974,35 @@ def run_config_migrations(config, config_path, from_version, to_version):
     """
     # All available migrations (idempotent - can run multiple times)
     all_migrations = {
-        "1.2.0_to_1.2.1": migrate_config_1_2_0_to_1_2_1,
+        "1.2.1_to_1.2.2": migrate_config_1_2_1_to_1_2_2,
     }
 
-    # Determine which migrations to run based on version sequence
-    version_sequence = ["1.0.0", "1.1.0", "1.2.0", "1.2.1"]
+    # Supported version sequence (only last stable → current)
+    version_sequence = ["1.2.1", "1.2.2"]
 
     try:
         from_idx = version_sequence.index(from_version)
         to_idx = version_sequence.index(to_version)
     except ValueError:
+        # Unknown version, skip migrations
         logger.warning(f"Unknown version in migration: {from_version} → {to_version}")
         return 0
 
     migrations_run = 0
     config_modified = False
 
-    # If from == to, still try to run the latest migration (idempotent check)
-    if from_idx == to_idx and to_version == "1.2.1":
-        # For v1.2.1, always try to run the 1.2.0→1.2.1 migration
-        # (it's idempotent and will only change if needed)
-        migration_key = "1.2.0_to_1.2.1"
+    # Run migrations sequentially
+    for i in range(from_idx, to_idx):
+        current_v = version_sequence[i]
+        next_v = version_sequence[i + 1]
+        migration_key = f"{current_v}_to_{next_v}"
+
         if migration_key in all_migrations:
+            print(f"   Running config migration: {migration_key}")
             config, was_modified = all_migrations[migration_key](config)
             if was_modified:
-                print(f"   Running config migration: {migration_key}")
                 config_modified = True
                 migrations_run += 1
-    else:
-        # Normal migration sequence for version upgrades
-        for i in range(from_idx, to_idx):
-            current_v = version_sequence[i]
-            next_v = version_sequence[i + 1]
-            migration_key = f"{current_v}_to_{next_v}"
-
-            if migration_key in all_migrations:
-                print(f"   Running config migration: {migration_key}")
-                config, was_modified = all_migrations[migration_key](config)
-                if was_modified:
-                    config_modified = True
-                    migrations_run += 1
 
     # Save config if modified
     if config_modified:
@@ -973,20 +1012,21 @@ def run_config_migrations(config, config_path, from_version, to_version):
     return migrations_run
 
 def run_database_migrations(conn, from_version, to_version):
-    """Run database migrations from one version to another."""
+    """Run database migrations from one version to another.
 
-    migrations = {
-        "1.0.0_to_1.1.0": migrate_1_0_0_to_1_1_0,
-        "1.1.0_to_1.2.0": migrate_1_1_0_to_1_2_0,
-    }
+    Note: Only supports migrations from last stable (1.2.1) to current.
+    """
+    # Database migrations (none needed for 1.2.1→1.2.2)
+    migrations = {}
 
-    # Determine which migrations to run
-    version_sequence = ["1.0.0", "1.1.0", "1.2.0", "1.2.1"]
+    # Supported version sequence (only last stable → current)
+    version_sequence = ["1.2.1", "1.2.2"]
 
     try:
         from_idx = version_sequence.index(from_version)
         to_idx = version_sequence.index(to_version)
     except ValueError:
+        # Unknown version, skip migrations
         logger.warning(f"Unknown version in migration: {from_version} → {to_version}")
         return 0
 
@@ -1018,37 +1058,15 @@ def run_database_migrations(conn, from_version, to_version):
 
     return migrations_run
 
-def migrate_config_1_2_0_to_1_2_1(config):
-    """Config migration for v1.2.1 - Fix nginx config path permissions.
+def migrate_config_1_2_1_to_1_2_2(config):
+    """Config migration for v1.2.2 - Async certbot workflow.
 
-    Changes:
-    - nginx.config_path: /etc/nginx/sites-enabled/tunnels-autogen.conf
-      → /opt/gtwy/nginx-configs/tunnels-autogen.conf
+    No config changes needed for v1.2.2 (only code changes).
 
     Returns:
         tuple: (updated_config, was_modified)
     """
-    old_path = '/etc/nginx/sites-enabled/tunnels-autogen.conf'
-    new_path = '/opt/gtwy/nginx-configs/tunnels-autogen.conf'
-
-    was_modified = False
-
-    if config.get('nginx', {}).get('config_path') == old_path:
-        print(f"      Updating nginx.config_path:")
-        print(f"         {old_path}")
-        print(f"      → {new_path}")
-        config['nginx']['config_path'] = new_path
-        was_modified = True
-
-    return config, was_modified
-
-def migrate_1_0_0_to_1_1_0(conn):
-    """Migration for v1.1.0 - no schema changes needed."""
-    pass
-
-def migrate_1_1_0_to_1_2_0(conn):
-    """Migration for v1.2.0 - no schema changes needed."""
-    pass
+    return config, False
 
 def validate_config(config):
     """Validate configuration structure (non-fatal, just warnings)."""
@@ -1972,6 +1990,7 @@ def cmd_request(args):
         raise DependencyError(f"nginx configuration failed: {e}")
 
     # Create DNS record
+    dns_success = True
     try:
         create_dns_record(subdomain, config)
         logger.info(f"DNS record created for {subdomain}")
@@ -1982,9 +2001,7 @@ def cmd_request(args):
             (f"DNS creation failed: {e}", subdomain)
         )
         conn.commit()
-
-    # Certificate will be requested by sync-certs (async)
-    logger.info(f"Tunnel {subdomain} created with status pending_cert")
+        dns_success = False
 
     # Update last_seen for box
     conn.execute(
@@ -1993,14 +2010,29 @@ def cmd_request(args):
     )
     conn.commit()
 
+    # Close DB connection before spawning background process
+    conn.close()
+
+    # Spawn background process to finalize tunnel (DNS wait + certificate)
+    if dns_success:
+        try:
+            subprocess.Popen(
+                ['/usr/local/bin/gtwy', 'finalize-tunnel', subdomain,
+                 '--config', args.config, '--db', args.db],
+                start_new_session=True,  # Detach from parent process
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            logger.info(f"Background finalization started for {subdomain}")
+        except Exception as e:
+            logger.error(f"Failed to start background finalization: {e}")
+
     # Print JSON response with port and subdomain (for box to use)
     result = {
         "server_port": server_port,
         "subdomain": subdomain
     }
     print(json.dumps(result))
-
-    conn.close()
 
 def cmd_release(args):
     """Release a tunnel (called by box via SSH)."""
@@ -2057,6 +2089,98 @@ def cmd_release(args):
 
     logger.info(f"Tunnel {subdomain} released by {box_id}")
 
+    conn.close()
+
+def cmd_finalize_tunnel(args):
+    """Finalize tunnel setup: wait for DNS, request certificate, activate SSL.
+
+    This command runs in background (detached from SSH session) and:
+    1. Waits for DNS propagation
+    2. Requests Let's Encrypt certificate
+    3. Updates tunnel status to 'active'
+    4. Regenerates nginx config with SSL
+    5. Reloads nginx
+    """
+    config = load_config(args.config)
+    conn = get_db_connection(args.db)
+
+    subdomain = args.subdomain
+
+    # Get tunnel from database
+    cursor = conn.execute("SELECT * FROM tunnels WHERE subdomain = ?", (subdomain,))
+    tunnel = cursor.fetchone()
+
+    if not tunnel:
+        logger.error(f"Tunnel {subdomain} not found in database")
+        conn.close()
+        sys.exit(1)
+
+    logger.info(f"Finalizing tunnel: {subdomain}")
+
+    # Step 1: Wait for DNS propagation (max 120 seconds)
+    logger.info(f"Waiting for DNS propagation...")
+    gateway_ip = config['gateway']['public_ip']
+    dns_ready = False
+
+    for attempt in range(24):  # 24 × 5s = 120s max
+        if check_dns_propagation(subdomain, gateway_ip):
+            logger.info(f"DNS propagation complete (attempt {attempt + 1})")
+            dns_ready = True
+            break
+        time.sleep(5)
+
+    if not dns_ready:
+        logger.error(f"DNS propagation timeout for {subdomain}")
+        conn.execute(
+            "UPDATE tunnels SET status = 'error', error_message = ? WHERE subdomain = ?",
+            ("DNS propagation timeout", subdomain)
+        )
+        conn.commit()
+        conn.close()
+        sys.exit(1)
+
+    # Step 2: Request certificate via certbot
+    logger.info(f"Requesting SSL certificate...")
+    try:
+        cert_success = request_certificate(subdomain, config)
+        if not cert_success:
+            raise DependencyError("Certificate request failed")
+        logger.info(f"Certificate obtained for {subdomain}")
+    except Exception as e:
+        logger.error(f"Certificate request failed: {e}")
+        conn.execute(
+            "UPDATE tunnels SET status = 'error', error_message = ? WHERE subdomain = ?",
+            (f"Certificate request failed: {e}", subdomain)
+        )
+        conn.commit()
+        conn.close()
+        sys.exit(1)
+
+    # Step 3: Update status to active
+    conn.execute(
+        "UPDATE tunnels SET status = 'active', error_message = NULL WHERE subdomain = ?",
+        (subdomain,)
+    )
+    conn.commit()
+    logger.info(f"Tunnel status updated to 'active'")
+
+    # Step 4: Regenerate nginx config with SSL template
+    try:
+        nginx_config = generate_nginx_config(conn, config['nginx']['template_path'])
+        write_nginx_config(nginx_config, config['nginx']['config_path'])
+        reload_nginx()
+        logger.info(f"nginx reloaded with SSL configuration")
+    except Exception as e:
+        logger.error(f"nginx update failed: {e}")
+        conn.execute(
+            "UPDATE tunnels SET status = 'error', error_message = ? WHERE subdomain = ?",
+            (f"nginx update failed: {e}", subdomain)
+        )
+        conn.commit()
+        conn.close()
+        sys.exit(1)
+
+    logger.info(f"✓ Tunnel {subdomain} finalized successfully")
     conn.close()
 
 # ============================================================================
@@ -3037,6 +3161,12 @@ def build_parser():
                                        help='Release tunnel (from box)')
     p_release.add_argument('service', help='Service name')
     p_release.set_defaults(func=cmd_release)
+
+    # finalize-tunnel (internal, runs in background)
+    p_finalize = subparsers.add_parser('finalize-tunnel',
+                                        help='Finalize tunnel setup (internal, runs in background)')
+    p_finalize.add_argument('subdomain', help='Full subdomain')
+    p_finalize.set_defaults(func=cmd_finalize_tunnel)
 
     # list
     p_list = subparsers.add_parser('list', help='Show all tunnels')
