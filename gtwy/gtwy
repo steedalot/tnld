@@ -34,7 +34,7 @@ from typing import Optional, Dict, List, Any, Tuple
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 DEFAULT_CONFIG_PATH = "/opt/gtwy/config.yml"
 DEFAULT_DB_PATH = "/opt/gtwy/tunnels.db"
 
@@ -653,9 +653,6 @@ def create_dns_record(subdomain: str, config: Dict[str, Any]):
     # Last two parts are the domain
     domain = '.'.join(parts[-2:])
 
-    # Hostname is everything before the domain
-    hostname = subdomain.replace(f".{domain}", "")
-
     # Get zone ID
     zone_id = get_zone_id_for_domain(domain, config)
 
@@ -666,15 +663,19 @@ def create_dns_record(subdomain: str, config: Dict[str, Any]):
     api_key = f"{config['ionos']['public_prefix']}.{config['ionos']['secret']}"
     api_url = f"https://api.hosting.ionos.com/dns/v1/zones/{zone_id}/records"
 
-    headers = {"X-API-Key": api_key}
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
     payload = [{
-        "name": hostname,
+        "name": subdomain,
         "type": "A",
         "content": server_ip,
         "ttl": 3600,
-        "prio": 0,
         "disabled": False
     }]
+
+    logger.info(f"Creating DNS record: {subdomain} → {server_ip}")
 
     try:
         response = requests.post(api_url, headers=headers, json=payload, timeout=10)
@@ -688,6 +689,17 @@ def create_dns_record(subdomain: str, config: Dict[str, Any]):
                 raise DependencyError(f"IONOS API error: {error_msg}")
 
         logger.info(f"DNS record created: {subdomain} → {server_ip}")
+    except requests.exceptions.HTTPError as e:
+        # Try to get detailed error from response body
+        try:
+            error_detail = e.response.json()
+            logger.error(f"DNS API error response: {error_detail}")
+            if isinstance(error_detail, list) and len(error_detail) > 0:
+                error_msg = error_detail[0].get('message', str(e))
+                raise DependencyError(f"Failed to create DNS record: {error_msg}")
+        except Exception:
+            pass
+        raise DependencyError(f"Failed to create DNS record: {e}")
     except requests.exceptions.RequestException as e:
         raise DependencyError(f"Failed to create DNS record: {e}")
 
@@ -701,7 +713,6 @@ def delete_dns_record(subdomain: str, config: Dict[str, Any]):
     # Extract domain from subdomain
     parts = subdomain.split('.')
     domain = '.'.join(parts[-2:])
-    hostname = subdomain.replace(f".{domain}", "")
 
     # Get zone ID
     zone_id = get_zone_id_for_domain(domain, config)
@@ -719,7 +730,7 @@ def delete_dns_record(subdomain: str, config: Dict[str, Any]):
 
         record_id = None
         for record in records:
-            if record.get('name') == hostname and record.get('type') == 'A':
+            if record.get('name') == subdomain and record.get('type') == 'A':
                 record_id = record['id']
                 break
 
@@ -982,7 +993,7 @@ def run_config_migrations(config, config_path, from_version, to_version):
     }
 
     # Supported version sequence (only last stable → current)
-    version_sequence = ["1.2.1", "1.2.2"]
+    version_sequence = ["1.2.1", "1.2.2", "1.2.3"]
 
     try:
         from_idx = version_sequence.index(from_version)
@@ -1020,11 +1031,11 @@ def run_database_migrations(conn, from_version, to_version):
 
     Note: Only supports migrations from last stable (1.2.1) to current.
     """
-    # Database migrations (none needed for 1.2.1→1.2.2)
+    # Database migrations (none needed for 1.2.1→1.2.2, 1.2.2→1.2.3)
     migrations = {}
 
     # Supported version sequence (only last stable → current)
-    version_sequence = ["1.2.1", "1.2.2"]
+    version_sequence = ["1.2.1", "1.2.2", "1.2.3"]
 
     try:
         from_idx = version_sequence.index(from_version)

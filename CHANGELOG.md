@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2025-12-15
+
+### Fixed
+
+#### gtwy (Gateway Manager)
+- **Critical DNS API fix** - DNS records can now be created successfully
+  - Changed IONOS API payload to use full FQDN instead of hostname only
+  - Fixed `create_dns_record()`: uses `subdomain` (FQDN) instead of `hostname` in API request
+  - Fixed `delete_dns_record()`: matches records by full FQDN instead of hostname
+  - Multi-level subdomains like `service.box.domain.tld` now work correctly
+  - Improved error logging to show detailed API error responses
+
+### Technical
+
+- IONOS DNS API expects the full FQDN (e.g., `langflow.itbox1.kibox.online`) in the `name` field, not just the hostname part (e.g., `langflow.itbox1`)
+- Removed unused `hostname` variable from DNS functions
+- Added version 1.2.3 to migration version sequences
+
 ## [1.2.2] - 2025-12-14
 
 ### Changed
