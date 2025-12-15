@@ -34,7 +34,7 @@ from typing import Optional, Dict, List, Any, Tuple
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 DEFAULT_CONFIG_PATH = "/opt/gtwy/config.yml"
 DEFAULT_DB_PATH = "/opt/gtwy/tunnels.db"
 
@@ -580,6 +580,45 @@ def write_nginx_config(config_content: str, config_path: str):
     shutil.move(temp_path, config_path)
     os.chmod(config_path, 0o644)
 
+def setup_certbot_renewal_hook():
+    """Setup certbot post-renewal hook to reload nginx after certificate renewal.
+
+    This ensures that nginx picks up renewed certificates automatically.
+    The hook is executed by certbot after any successful certificate renewal.
+    """
+    hook_dir = Path('/etc/letsencrypt/renewal-hooks/post')
+    hook_file = hook_dir / 'nginx-reload.sh'
+
+    # Create hook directory if it doesn't exist
+    hook_dir.mkdir(parents=True, exist_ok=True)
+
+    # Hook script content
+    hook_content = """#!/bin/bash
+# Post-Renewal Hook for certbot
+# Auto-installed by gtwy
+# This script reloads nginx after certbot renews any certificate
+
+nginx -s reload
+
+if [ $? -eq 0 ]; then
+    echo "[$(date)] nginx reloaded successfully after certificate renewal"
+else
+    echo "[$(date)] ERROR: nginx reload failed after certificate renewal" >&2
+    exit 1
+fi
+"""
+
+    # Write hook script
+    with open(hook_file, 'w') as f:
+        f.write(hook_content)
+
+    # Make executable
+    os.chmod(hook_file, 0o755)
+    os.chown(hook_file, 0, 0)  # root:root
+
+    logger.info("Certbot renewal hook installed")
+    return True
+
 # ============================================================================
 # DNS MANAGEMENT (IONOS API)
 # ============================================================================
@@ -993,7 +1032,7 @@ def run_config_migrations(config, config_path, from_version, to_version):
     }
 
     # Supported version sequence (only last stable → current)
-    version_sequence = ["1.2.1", "1.2.2", "1.2.3"]
+    version_sequence = ["1.2.1", "1.2.2", "1.2.3", "1.2.4"]
 
     try:
         from_idx = version_sequence.index(from_version)
@@ -1031,11 +1070,11 @@ def run_database_migrations(conn, from_version, to_version):
 
     Note: Only supports migrations from last stable (1.2.1) to current.
     """
-    # Database migrations (none needed for 1.2.1→1.2.2, 1.2.2→1.2.3)
+    # Database migrations (none needed for 1.2.1→1.2.2, 1.2.2→1.2.3, 1.2.3→1.2.4)
     migrations = {}
 
     # Supported version sequence (only last stable → current)
-    version_sequence = ["1.2.1", "1.2.2", "1.2.3"]
+    version_sequence = ["1.2.1", "1.2.2", "1.2.3", "1.2.4"]
 
     try:
         from_idx = version_sequence.index(from_version)
@@ -1288,6 +1327,15 @@ tunneluser ALL=(root) NOPASSWD: /usr/bin/certbot certificates
         print("   or:")
         print("     apt-get install python3-yaml python3-requests")
 
+    # 11. Setup certbot renewal hook
+    print("\n9. Setting up certbot renewal hook...")
+    try:
+        setup_certbot_renewal_hook()
+        print("   ✓ Certbot renewal hook installed")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not install certbot hook: {e}")
+        print("   Certificates may not reload automatically after renewal")
+
     # Installation complete
     print("\n" + "="*60)
     print("✓ Installation complete!")
@@ -1500,7 +1548,16 @@ def cmd_update(args):
             print(f"      sudo touch /opt/gtwy/nginx-configs/tunnels-autogen.conf")
             print(f"      sudo ln -sf /opt/gtwy/nginx-configs/tunnels-autogen.conf /etc/nginx/sites-enabled/tunnels-autogen.conf")
 
-    # 7. Success
+    # 7. Setup certbot renewal hook (v1.2.4+)
+    print("\n7. Setting up certbot renewal hook...")
+    try:
+        setup_certbot_renewal_hook()
+        print("   ✓ Certbot renewal hook installed")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not install certbot hook: {e}")
+        print("   Certificates may not reload automatically after renewal")
+
+    # 8. Success
     print("\n" + "="*60)
     print(f"✓ gtwy updated successfully: {installed_version} → {current_version}")
     print("="*60)
