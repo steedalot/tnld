@@ -1453,6 +1453,17 @@ def cmd_update(args):
 
             print(f"   ✓ nginx configs directory: root:gtwy-admin 775")
 
+            # Regenerate nginx config (fixes old template versions)
+            print("   Regenerating nginx config with new templates...")
+            try:
+                conn = get_db_connection(DEFAULT_DB_PATH)
+                nginx_config = generate_nginx_config(conn, config['nginx']['template_path'])
+                write_nginx_config(nginx_config, config['nginx']['config_path'])
+                conn.close()
+                print("   ✓ nginx config regenerated")
+            except Exception as e:
+                print(f"   ⚠ Could not regenerate nginx config: {e}")
+
             # Test nginx config
             result = subprocess.run(['sudo', 'nginx', '-t'], capture_output=True, text=True)
             if result.returncode == 0:
