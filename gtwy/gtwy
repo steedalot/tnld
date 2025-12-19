@@ -34,7 +34,7 @@ from typing import Optional, Dict, List, Any, Tuple
 # CONSTANTS
 # ============================================================================
 
-VERSION = "1.2.4"
+VERSION = "1.2.6"
 DEFAULT_CONFIG_PATH = "/opt/gtwy/config.yml"
 DEFAULT_DB_PATH = "/opt/gtwy/tunnels.db"
 
@@ -47,6 +47,11 @@ server {
     listen 80;
     listen [::]:80;
     server_name {SUBDOMAIN};
+
+    # ACME challenge location for Let's Encrypt (must come before proxy!)
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
 
     # Proxy settings
     location / {
@@ -83,8 +88,15 @@ server {
     listen [::]:80;
     server_name {SUBDOMAIN};
 
+    # ACME challenge location for Let's Encrypt renewals
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
     # Redirect HTTP to HTTPS
-    return 301 https://$server_name$request_uri;
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
 }
 
 server {
@@ -178,6 +190,9 @@ def setup_console_logging(level: str = 'INFO'):
 def setup_logging(log_file: str, level: str = 'INFO', max_mb: int = 10, backup_count: int = 5):
     """Configure logging with rotation."""
     log_level = getattr(logging, level.upper(), logging.INFO)
+
+    # Clear existing handlers to avoid duplicates
+    logger.handlers.clear()
 
     # Create log directory if it doesn't exist
     log_path = Path(log_file)
@@ -636,7 +651,10 @@ def get_zone_id_for_domain(domain: str, config: Dict[str, Any]) -> str:
     api_key = f"{config['ionos']['public_prefix']}.{config['ionos']['secret']}"
     api_url = "https://api.hosting.ionos.com/dns/v1/zones"
 
-    headers = {"X-API-Key": api_key}
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
 
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
@@ -756,16 +774,25 @@ def delete_dns_record(subdomain: str, config: Dict[str, Any]):
     # Get zone ID
     zone_id = get_zone_id_for_domain(domain, config)
 
-    # Get all records for zone
+    # Get zone with filtered records (using query parameters)
     api_key = f"{config['ionos']['public_prefix']}.{config['ionos']['secret']}"
-    api_url = f"https://api.hosting.ionos.com/dns/v1/zones/{zone_id}/records"
-    headers = {"X-API-Key": api_key}
+    # Use getZone endpoint with recordName filter instead of non-existent list endpoint
+    api_url = f"https://api.hosting.ionos.com/dns/v1/zones/{zone_id}"
+    params = {
+        'recordName': subdomain,
+        'recordType': 'A'
+    }
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
 
     try:
-        # Find record
-        response = requests.get(api_url, headers=headers, timeout=10)
+        # Get zone with filtered records
+        response = requests.get(api_url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
-        records = response.json()
+        zone = response.json()
+        records = zone.get('records', [])
 
         record_id = None
         for record in records:
@@ -778,7 +805,7 @@ def delete_dns_record(subdomain: str, config: Dict[str, Any]):
             return
 
         # Delete record
-        delete_url = f"{api_url}/{record_id}"
+        delete_url = f"https://api.hosting.ionos.com/dns/v1/zones/{zone_id}/records/{record_id}"
         response = requests.delete(delete_url, headers=headers, timeout=10)
         response.raise_for_status()
         logger.info(f"DNS record deleted: {subdomain}")
@@ -802,7 +829,8 @@ def request_certificate(subdomain: str, config: Dict[str, Any]) -> bool:
     """
     cmd = [
         'sudo', 'certbot', 'certonly',
-        '--nginx',
+        '--webroot',
+        '-w', '/var/www/html',
         '-d', subdomain,
         '--non-interactive',
         '--agree-tos',
@@ -1336,6 +1364,32 @@ tunneluser ALL=(root) NOPASSWD: /usr/bin/certbot certificates
         print(f"   ⚠ Warning: Could not install certbot hook: {e}")
         print("   Certificates may not reload automatically after renewal")
 
+    # 12. Setup webroot directory for certbot
+    print("\n10. Setting up certbot webroot...")
+    webroot_dir = Path('/var/www/html')
+    try:
+        webroot_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(webroot_dir, 0o755)
+        print("   ✓ Webroot directory created: /var/www/html")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not create webroot: {e}")
+        print("   Certificate requests may fail")
+
+    # 13. Setup log file with correct permissions
+    print("\n11. Setting up log file...")
+    log_file = Path('/opt/gtwy/gtwy.log')
+    try:
+        # Create log file if it doesn't exist
+        log_file.touch(exist_ok=True)
+        # Set ownership: root:gtwy-admin
+        os.chown(log_file, 0, gtwy_admin_gid)
+        # Set permissions: 664 (rw-rw-r--)
+        os.chmod(log_file, 0o664)
+        print("   ✓ Log file created: /opt/gtwy/gtwy.log (root:gtwy-admin 664)")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not setup log file: {e}")
+        print("   Logging may not work correctly")
+
     # Installation complete
     print("\n" + "="*60)
     print("✓ Installation complete!")
@@ -1557,7 +1611,35 @@ def cmd_update(args):
         print(f"   ⚠ Warning: Could not install certbot hook: {e}")
         print("   Certificates may not reload automatically after renewal")
 
-    # 8. Success
+    # 8. Setup webroot directory for certbot (v1.2.5+)
+    print("\n8. Setting up certbot webroot...")
+    webroot_dir = Path('/var/www/html')
+    try:
+        webroot_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(webroot_dir, 0o755)
+        print("   ✓ Webroot directory created: /var/www/html")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not create webroot: {e}")
+        print("   Certificate requests may fail")
+
+    # 9. Setup log file with correct permissions (v1.2.6+)
+    print("\n9. Setting up log file permissions...")
+    log_file = Path('/opt/gtwy/gtwy.log')
+    try:
+        import grp
+        # Create log file if it doesn't exist
+        log_file.touch(exist_ok=True)
+        # Set ownership: root:gtwy-admin
+        gtwy_admin_gid = grp.getgrnam('gtwy-admin').gr_gid
+        os.chown(log_file, 0, gtwy_admin_gid)
+        # Set permissions: 664 (rw-rw-r--)
+        os.chmod(log_file, 0o664)
+        print("   ✓ Log file permissions updated: /opt/gtwy/gtwy.log (root:gtwy-admin 664)")
+    except Exception as e:
+        print(f"   ⚠ Warning: Could not setup log file: {e}")
+        print("   Logging may not work correctly for SSH commands")
+
+    # 10. Success
     print("\n" + "="*60)
     print(f"✓ gtwy updated successfully: {installed_version} → {current_version}")
     print("="*60)
@@ -2111,12 +2193,15 @@ def cmd_request(args):
     # Spawn background process to finalize tunnel (DNS wait + certificate)
     if dns_success:
         try:
+            # Open log file for background process stderr/stdout
+            log_file = open('/opt/gtwy/gtwy.log', 'a')
             subprocess.Popen(
-                ['/usr/local/bin/gtwy', 'finalize-tunnel', subdomain,
-                 '--config', args.config, '--db', args.db],
+                ['/usr/local/bin/gtwy',
+                 '--config', args.config, '--db', args.db,
+                 'finalize-tunnel', subdomain],
                 start_new_session=True,  # Detach from parent process
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=log_file,
+                stderr=log_file
             )
             logger.info(f"Background finalization started for {subdomain}")
         except Exception as e:
@@ -2944,6 +3029,18 @@ def cmd_sync_certs(args):
 
     conn.commit()
 
+    # Regenerate nginx config if any certificates were successfully obtained
+    if success > 0:
+        print("\nRegenerating nginx configuration...")
+        try:
+            nginx_config = generate_nginx_config(conn, config['nginx']['template_path'])
+            write_nginx_config(nginx_config, config['nginx']['config_path'])
+            reload_nginx()
+            print("✓ nginx reloaded with SSL configurations")
+        except Exception as e:
+            print(f"✗ nginx update failed: {e}")
+            logger.error(f"nginx update failed after cert sync: {e}")
+
     print(f"\nProcessed {len(pending)} tunnel(s): {success} success, {skipped} skipped")
 
     logger.info(f"Certificate sync: {success} success, {skipped} skipped")
@@ -3377,9 +3474,22 @@ def main():
         sys.exit(0)
 
     # Setup logging
-    # For SSH commands (BOX_ID set), use console-only logging
+    # For SSH commands (BOX_ID set), use file logging too (for debugging)
     if os.environ.get('BOX_ID'):
-        setup_console_logging()
+        try:
+            if Path(args.config).exists():
+                config = load_config(args.config)
+                log_config = config.get('logging', {})
+                setup_logging(
+                    log_config.get('file', '/opt/gtwy/gtwy.log'),
+                    log_config.get('level', 'INFO'),
+                    log_config.get('max_size_mb', 10),
+                    log_config.get('backup_count', 5)
+                )
+            else:
+                setup_console_logging()
+        except Exception:
+            setup_console_logging()
     # For regular commands, use file logging
     elif Path(args.config).exists() and args.command != 'setup':
         try:
