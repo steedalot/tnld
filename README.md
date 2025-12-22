@@ -134,7 +134,6 @@ sudo ./tnl update
 - [gtwy Documentation](gtwy/README.md) - Server-side gateway manager
 - [tnl Documentation](tnl/README.md) - Client-side tunnel manager
 - [CHANGELOG](CHANGELOG.md) - Version history and upgrade notes
-- [Project Structure](STRUCTURE.md) - Repository organization
 
 ## Requirements
 
@@ -175,11 +174,11 @@ sudo ./tnl update
 
 This project uses [Semantic Versioning](https://semver.org/):
 
-- **v1.2.2** - Async certificate workflow (current)
-  - Instant tunnel creation (no waiting for DNS/certificates)
-  - Background certificate requests with status tracking
-  - HTTP-only → automatic HTTPS upgrade
-  - Simplified update paths (only last stable → current)
+- **v1.2.6** - Automatic tunnel finalization & zero-downtime updates (current)
+  - Fixed automatic SSL certificate provisioning
+  - Fixed DNS record cleanup
+  - Zero-downtime updates (services continue running)
+  - All operations properly logged
 
 - **v1.2.1** - Bugfix release
   - Fixed: v1.0.0 → v1.2.x update path

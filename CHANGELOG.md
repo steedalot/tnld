@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2025-12-19
+
+### Fixed
+
+#### gtwy (Gateway Manager)
+- **Automatic tunnel finalization** - Fixed background SSL certificate provisioning
+  - Log file permissions now correctly set to root:gtwy-admin 664
+  - Fixed argument order in subprocess call (--config/--db before subcommand)
+  - Background process now properly logs to /opt/gtwy/gtwy.log
+  - SSH command logging now works (tunneluser can write to log file)
+
+- **DNS record deletion** - Fixed DNS cleanup using correct IONOS API endpoint
+  - Changed from non-existent GET /zones/{id}/records to GET /zones/{id}
+  - Uses query parameters (recordName, recordType) to filter records
+  - DELETE /zones/{id}/records/{recordId} now works correctly
+  - DNS records are properly cleaned up when tunnels are removed
+
+#### tnl (Tunnel Client)
+- **Zero-downtime updates** - Services continue running during updates
+  - Removed service stop/restart from update process
+  - No SSH tunnel interruption when updating
+  - Update now safe to run over SSH tunnel
+  - Only /usr/local/bin/tnl executable is replaced
+
+### Changed
+
+#### gtwy (Gateway Manager)
+- Automatic log file setup with correct permissions during install/update
+- Installation: Creates log file with root:gtwy-admin 664 (step 11)
+- Update: Fixes log file permissions if incorrect (step 9)
+- Removed all debug logging statements
+
+### Technical
+
+- Log file accessible by tunneluser via gtwy-admin group membership
+- Background finalization runs detached with proper logging
+- DNS API uses correct endpoints per official IONOS DNS API spec
+- Content-Type header added to all IONOS API requests for consistency
+- Services use autossh directly, not tnl binary (enables zero-downtime updates)
+- Added version 1.2.6 to migration sequences
+
+### Impact
+
+- ✅ Tunnels now automatically get SSL certificates within ~10 seconds
+- ✅ DNS records are properly cleaned up when tunnels are removed
+- ✅ All operations are properly logged for debugging
+- ✅ Updates can be performed without service interruption
+
 ## [1.2.4] - 2025-12-15
 
 ### Added

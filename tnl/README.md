@@ -173,7 +173,7 @@ Jan 15 14:23:46 box01 autossh[12345]: starting ssh ...
 
 ```bash
 tnl version
-# → tnl v1.0.0
+# → tnl v1.2.6
 ```
 
 ---
@@ -444,29 +444,31 @@ sudo tnl setup gateway.example.com 20001
 sudo tnl status
 ```
 
-**4. Später: Service-Tunnel hinzufügen**
+**4. Service-Tunnel hinzufügen**
 ```bash
-# (Noch nicht implementiert - kommt später)
-# sudo tnl add gitea 3000
-# → Kommuniziert mit Gateway via Admin-Tunnel
-# → Gateway erstellt DNS, nginx-Config, SSL
-# → Box baut Service-Tunnel auf
+# Service-Tunnel für Gitea hinzufügen
+sudo tnl add gitea 3000
+
+# Weitere Services hinzufügen
+sudo tnl add theia 8080
+sudo tnl add portainer 9000
+
+# Status prüfen
+sudo tnl list
 ```
 
 ---
 
-## 🎯 Roadmap
+## 📝 Changelog
 
-### v1.0.0 (aktuell)
-- ✅ `tnl install` - Einmalige Installation
-- ✅ `tnl setup` - Admin-Tunnel einrichten
-- ✅ `tnl status` - Status prüfen
+Siehe [CHANGELOG.md](../CHANGELOG.md) im Hauptverzeichnis für vollständige Versionshistorie.
 
-### v1.1.0 (geplant)
-- ⏳ `tnl add <service> <port>` - Service-Tunnel hinzufügen
-- ⏳ `tnl remove <service>` - Service-Tunnel entfernen
-- ⏳ `tnl list` - Alle Tunnel anzeigen
-- ⏳ Kommunikation mit Gateway via Admin-SSH-Tunnel
+### v1.2.6 (current)
+- ✅ Zero-downtime updates
+- ✅ Service tunnels management (`add`, `remove`, `list`)
+- ✅ Admin tunnel setup
+- ✅ Automatic reconnection
+- ✅ Update mechanism with configuration preservation
 
 ---
 
@@ -479,6 +481,14 @@ MIT License
 ## 👨‍💻 Autor
 
 Entwickelt für die KI.Box / IT.Box Infrastruktur.
+
+---
+
+## 🔗 Links
+
+- [Main README](../README.md) - Project overview
+- [CHANGELOG](../CHANGELOG.md) - Full version history
+- [gtwy Documentation](../gtwy/README.md) - Server-side gateway manager
 
 ---
 

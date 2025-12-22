@@ -265,11 +265,24 @@ Keine Shell, keine anderen Befehle!
 
 ## 🧪 Testing
 
-Siehe [TESTING.md](TESTING.md) für vollständigen Test-Plan mit:
-- Lokale Syntax-Tests
-- Server-Setup & Installation
-- Test-Domain-Tests (mit Staging)
-- Produktions-Rollout
+### Lokale Syntax-Tests
+```bash
+python3 -m py_compile gtwy
+```
+
+### Installation testen
+```bash
+sudo ./gtwy install
+sudo gtwy setup
+gtwy health
+```
+
+### Mit Staging-Modus testen
+```yaml
+# config.yml
+certbot:
+  staging: true  # Für Tests!
+```
 
 ---
 
@@ -371,15 +384,12 @@ curl -H "X-API-Key: PREFIX.SECRET" https://api.hosting.ionos.com/dns/v1/zones
 
 ## 📝 Changelog
 
-### v1.0.0 (2025-01-15)
-- ✨ Initial Release
-- 🔧 Single-file self-installing tool
-- 🚀 `install` und `setup` Kommandos
-- 🌐 Multi-Domain Support
-- 📡 IONOS DNS API Integration
-- 🔒 Let's Encrypt SSL Automation
-- 📊 SQLite-basierte Verwaltung
-- 🔑 SSH-Key-basierte Authentifizierung
+Siehe [CHANGELOG.md](../CHANGELOG.md) im Hauptverzeichnis für vollständige Versionshistorie.
+
+### v1.2.6 (current)
+- Fixed automatic SSL certificate provisioning
+- Fixed DNS record cleanup
+- Zero-downtime updates
 
 ---
 
@@ -397,7 +407,6 @@ Entwickelt für die KI.Box / IT.Box Infrastruktur.
 
 ## 🔗 Links
 
-- [TESTING.md](TESTING.md) - Vollständiger Test-Plan
-- [BUGFIXES.md](BUGFIXES.md) - Behobene Bugs
-- [DNS_API_REVIEW.md](DNS_API_REVIEW.md) - IONOS API Review
-- [CLAUDE.md](CLAUDE.md) - Technische Spezifikation
+- [Main README](../README.md) - Project overview
+- [CHANGELOG](../CHANGELOG.md) - Full version history
+- [tnl Documentation](../tnl/README.md) - Client-side tunnel manager
